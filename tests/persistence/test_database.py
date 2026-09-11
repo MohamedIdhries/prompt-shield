@@ -172,3 +172,103 @@ class TestDatabaseWALMode:
                 result[0] if isinstance(result, (tuple, list)) else result["journal_mode"]
             )
         assert journal_mode.lower() == "wal"
+
+
+class TestDatabaseThreadSafety:
+    """Regression tests for the v0.7.6 thread-safety fix.
+
+    Prior to v0.7.6 the connection was opened with ``check_same_thread=True``,
+    so any ``engine.scan()`` running in a worker thread (e.g. under
+    ``anyio.to_thread.run_sync`` in the MCP server, or the existing
+    ``ToolResultGuard.ascan`` path) raised ``sqlite3.ProgrammingError`` and
+    silently dropped its audit row. These tests guard the fix.
+    """
+
+    _INSERT_SQL = """
+        INSERT INTO scan_history (
+            id, timestamp, input_hash, input_length,
+            overall_score, action_taken, detectors_fired,
+            scan_duration_ms, source
+        ) VALUES (?, datetime('now'), ?, ?, ?, ?, ?, ?, ?);
+    """
+
+    def test_connection_from_worker_thread_inserts_row(self, db: DatabaseManager) -> None:
+        """A row inserted from a worker thread must be visible from the main."""
+        import threading
+
+        errors: list[BaseException] = []
+
+        def _worker() -> None:
+            try:
+                with db.connection() as conn:
+                    conn.execute(
+                        self._INSERT_SQL,
+                        (
+                            "worker-thread-scan",
+                            "hash",
+                            2,
+                            0.1,
+                            "pass",
+                            "[]",
+                            1.0,
+                            "worker",
+                        ),
+                    )
+                    conn.commit()
+            except BaseException as exc:  # capture, re-raise on the main thread
+                errors.append(exc)
+
+        thread = threading.Thread(target=_worker)
+        thread.start()
+        thread.join(timeout=5.0)
+        assert not thread.is_alive()
+        assert not errors, f"worker thread raised: {errors[0]!r}"
+
+        with db.connection() as conn:
+            row = conn.execute(
+                "SELECT id FROM scan_history WHERE id = ?", ("worker-thread-scan",)
+            ).fetchone()
+        assert row is not None, "worker-thread insert did not persist"
+
+    def test_concurrent_writes_from_many_threads(self, db: DatabaseManager) -> None:
+        """Many concurrent writers must all succeed under the internal lock."""
+        import threading
+
+        n_writers = 8
+        rows_per_writer = 5
+        errors: list[BaseException] = []
+
+        def _writer(worker_id: int) -> None:
+            try:
+                for i in range(rows_per_writer):
+                    with db.connection() as conn:
+                        conn.execute(
+                            self._INSERT_SQL,
+                            (
+                                f"w{worker_id}-r{i}",
+                                "h",
+                                1,
+                                0.0,
+                                "pass",
+                                "[]",
+                                0.0,
+                                "concurrent",
+                            ),
+                        )
+                        conn.commit()
+            except BaseException as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=_writer, args=(w,)) for w in range(n_writers)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10.0)
+            assert not t.is_alive()
+        assert not errors, f"concurrent writes raised: {errors[0]!r}"
+
+        with db.connection() as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) AS c FROM scan_history WHERE source = 'concurrent'"
+            ).fetchone()["c"]
+        assert count == n_writers * rows_per_writer

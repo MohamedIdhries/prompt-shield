@@ -238,7 +238,7 @@ print(report.overall_risk_score)  # 1.0
 | **Haystack** | `PromptShieldGuard` + `PromptShieldOutputGuard` pipeline components (v2) |
 | **Pydantic AI** | `scan_input()` + `PromptShieldOutputValidator` (`attach()` one-liner) |
 | **CrewAI** | `PromptShieldCrewAITool` + `CrewAIGuard` |
-| **MCP** | Tool result filter |
+| **MCP** | Standalone MCP server (`prompt-shield-mcp`) for Claude Desktop / Cursor / VS Code + tool-result filter |
 | **Dify** | Marketplace plugin (4 tools) |
 | **n8n** | Community node (4 operations) |
 

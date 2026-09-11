@@ -1,0 +1,29 @@
+# Smithery.ai registry manifest for the prompt-shield MCP server.
+# https://smithery.ai/ — hosted MCP registry with search + install UIs.
+
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    properties:
+      config_path:
+        type: string
+        description: >-
+          Optional path to a custom prompt-shield YAML config. If omitted,
+          the bundled interactive-assistant profile is used
+          (src/prompt_shield/mcp_server/mcp_profile.yaml).
+      data_dir:
+        type: string
+        description: >-
+          Optional override for the prompt-shield data directory
+          (default: ~/.prompt_shield/). Set this if the default home
+          directory is read-only.
+    required: []
+  commandFunction: |-
+    (config) => ({
+      command: "prompt-shield-mcp",
+      env: {
+        ...(config.config_path ? { PROMPT_SHIELD_CONFIG: config.config_path } : {}),
+        ...(config.data_dir ? { PROMPT_SHIELD_DATA_DIR: config.data_dir } : {}),
+      },
+    })

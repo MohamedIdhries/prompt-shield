@@ -1,6 +1,7 @@
 # Claude Code
 .claude/
 .claude*
+.braid/
 CLAUDE.md
 CLAUDE.local.md
 

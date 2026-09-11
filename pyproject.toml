@@ -1,6 +1,6 @@
 [project]
 name = "prompt-shield-ai"
-version = "0.7.5"
+version = "0.7.6"
 description = "Self-learning prompt injection detection engine for LLM applications"
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -55,7 +55,7 @@ haystack = ["haystack-ai>=2.0"]
 pydantic-ai = ["pydantic-ai>=0.0.10"]
 django = ["django>=4.0"]
 crewai = ["crewai>=0.70", "crewai-tools>=0.12"]
-mcp = ["mcp>=1.0"]
+mcp = ["mcp>=1.10", "anyio>=3.7"]
 openai = ["openai>=1.0"]
 anthropic = ["anthropic>=0.30"]
 ml = [
@@ -82,6 +82,7 @@ dev = [
 prompt-shield = "prompt_shield.cli:main"
 prompt-shield-hook = "prompt_shield.hooks:prompt_shield_hook"
 prompt-shield-pii-hook = "prompt_shield.hooks:prompt_shield_pii_hook"
+prompt-shield-mcp = "prompt_shield.mcp_server.__main__:main"
 
 [project.entry-points."prompt_shield.detectors"]
 
@@ -138,6 +139,13 @@ module = [
 disallow_any_generics = false
 warn_return_any = false
 disable_error_code = ["arg-type", "misc", "assignment", "return-value", "index", "list-item", "unused-ignore"]
+
+# mcp SDK's @server.list_tools() / @server.call_tool() decorators come from a
+# stubs-less package (mcp>=1.10); their untyped-call / untyped-decorator
+# rules are noise for a first-party server implementation.
+[[tool.mypy.overrides]]
+module = ["prompt_shield.mcp_server.*"]
+disable_error_code = ["no-untyped-call", "untyped-decorator", "misc"]
 
 # FastAPI handlers rely on response_model= for schema; return type annotations
 # on each async def are boilerplate. Benchmarks/runner call into a loose

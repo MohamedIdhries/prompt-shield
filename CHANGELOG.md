@@ -7,6 +7,91 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.6] - 2026-09-11
+
+**Standalone MCP server (beta) + persistence thread-safety fix.**
+Ships the first release surface for the growing MCP-client ecosystem
+(Claude Desktop, Cursor, VS Code Copilot Chat, n8n) and closes a
+latent thread-safety bug in the persistence layer that was silently
+dropping audit rows from every async-framework integration.
+
+### Added
+
+- **Standalone MCP server (`prompt-shield-mcp`) — BETA.** New subpackage
+  `prompt_shield.mcp_server` exposes prompt-shield's scan API as an MCP
+  server over stdio, consumable by Claude Desktop, Cursor, VS Code
+  Copilot Chat, n8n, and any other MCP-compatible client. Four tools:
+  - `scan_input` — input prompt-injection detection via the input
+    engine.
+  - `scan_output` — output policy scanning via
+    `OutputScanEngine` (toxicity, code injection, prompt leakage, PII,
+    schema validation, bias/fairness, sentiment, hallucination,
+    relevance). **This is a different pipeline from `scan_input`** —
+    an earlier draft routed both through the input engine; the
+    v0.7.6 shipping wire calls the correct engine per tool.
+  - `scan_tool_result` — indirect-injection detection via
+    `ToolResultGuard`, with optional inline sanitization.
+  - `list_detectors` — enumerates both input detectors and output
+    scanners for introspection.
+
+  Wire-level correctness: server advertises `prompt-shield`'s own
+  version in the MCP handshake (was accidentally reporting the SDK
+  version); tool errors travel through `CallToolResult(isError=True)`
+  instead of a JSON-in-content workaround (requires `mcp>=1.10`, which
+  the `[mcp]` extra now pins); sync engine scans are offloaded to a
+  worker thread via `anyio.to_thread.run_sync` so the async event
+  loop stays responsive; a 1 MiB `MAX_INPUT_BYTES` cap rejects
+  oversize inputs with a proper MCP error response.
+
+  First-run experience: ships a bundled interactive-assistant profile
+  (`src/prompt_shield/mcp_server/mcp_profile.yaml`) loaded by default
+  when `PROMPT_SHIELD_CONFIG` is unset — `mode: flag` (advisory,
+  not blocking), higher `threshold: 0.85`, vault/fatigue/feedback/canary
+  disabled for deterministic session behaviour, d023 PII detection
+  off for *input* (kept armed for `scan_output`). Prevents "act as a
+  pirate" and similar ordinary conversational prompts from being
+  blocked on first-run. Users who want the strict firewall profile
+  point `PROMPT_SHIELD_CONFIG` at their own config file.
+
+  Startup: `run_stdio` runs one warm-up scan through both engines
+  before opening the transport so the very first `tools/call` from
+  Claude Desktop / Cursor does not exceed the client's ~30 s tool
+  timeout on cold ML-detector loads. `--selftest` prints one scan
+  result and exits (useful for verifying an install without a
+  client).
+
+  Console script `prompt-shield-mcp` registered under the `[mcp]`
+  extra, with proper `--help` / `--version` / `--selftest` support.
+  Fail-fast import guard prints an install hint if the `mcp` SDK is
+  missing.
+
+  Docs: `docs/mcp-server.md` covers Claude Desktop / Cursor / VS Code
+  / n8n configuration; `docs/mcp-registry-submissions.md` collects
+  paste-ready registry entries for `modelcontextprotocol/servers`,
+  `punkpeye/awesome-mcp-servers`, Smithery.ai, MCP.so, etc.
+  `smithery.yaml` at the repo root lets Smithery index the server
+  automatically.
+
+  Complementary to (not a replacement for) the existing
+  `PromptShieldMCPFilter` proxy wrapper in
+  `prompt_shield.integrations.mcp` — the filter is client-side,
+  wrapping other MCP servers; the standalone server is server-side,
+  exposing scan tools to any MCP client.
+
+  Marked BETA in this release: tool surface may change based on client
+  feedback before v0.8.0 promotes it to stable.
+
+### Fixed
+
+- **Thread-safe persistence.** `DatabaseManager` now opens SQLite with
+  `check_same_thread=False` and serialises access via an internal
+  `threading.Lock`. The prior configuration silently dropped audit
+  rows and produced `WARNING Failed to log scan: SQLite objects
+  created in a thread can only be used in that same thread` any time
+  `engine.scan` was called from a worker thread — which included every
+  async framework integration going through `ToolResultGuard.ascan`.
+  The MCP server's async offload depends on this fix.
+
 ## [0.7.5] - 2026-08-19
 
 **Fifth cross-domain technique + twice-promised paper deliverables.**

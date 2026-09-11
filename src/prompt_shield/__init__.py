@@ -15,7 +15,7 @@ from prompt_shield.models import (
 )
 from prompt_shield.tool_guard import ToolResultGuard, scan_tool_result
 
-__version__ = "0.7.5"
+__version__ = "0.7.6"
 
 __all__ = [
     "Action",
