@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### In progress / v0.8.0
+
+**Framework-integration parity for the tool-result boundary.** The
+`ToolResultGuard` primitive (v0.7.0) and the standalone
+`prompt-shield-mcp` server (v0.7.6) are stable; v0.8.0 extends the
+same pattern to three framework wrappers so tool return values get
+the attack-family taxonomy and `sanitize` support regardless of
+which integration the app uses. All three are tracked in the
+[v0.8.0 milestone](https://github.com/mthamil107/prompt-shield/milestone/1)
+and open for contributions (`help wanted`):
+
+- **OpenAI wrapper — `role="tool"` message scanning.**
+  Route `role == "tool"` messages in `PromptShieldOpenAI.create()`
+  through `ToolResultGuard` instead of the generic input gate.
+  See [#29](https://github.com/mthamil107/prompt-shield/issues/29)
+  for the design notes and test-coverage expectations.
+- **pydantic-ai — `scan_tool_result` primitives.**
+  Hook `ToolResultGuard` into the pydantic-ai `Agent` /`Tool`
+  execution flow. See
+  [#30](https://github.com/mthamil107/prompt-shield/issues/30).
+- **CrewAI — `scan_tool_result` method.**
+  Add a `guarded_tool` wrapper or `CrewAIGuard.scan_tool_result`
+  method so tool outputs on a Crew get intercepted. See
+  [#31](https://github.com/mthamil107/prompt-shield/issues/31).
+
 ## [0.7.6] - 2026-09-11
 
 **Standalone MCP server (beta) + persistence thread-safety fix.**
