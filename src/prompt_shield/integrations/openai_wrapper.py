@@ -7,12 +7,39 @@ from typing import Any
 
 from prompt_shield.engine import PromptShieldEngine
 from prompt_shield.models import Action
+from prompt_shield.tool_guard.guard import ToolResultGuard
 
 logger = logging.getLogger("prompt_shield.openai")
 
 
+def _extract_openai_message_text(content: Any) -> str:
+    """Extract string text from OpenAI message content (string or list of content parts)."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for part in content:
+            if isinstance(part, dict):
+                text = part.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+            elif isinstance(part, str):
+                parts.append(part)
+        return "\n".join(parts)
+    return str(content)
+
+
 class PromptShieldOpenAI:
-    """Wraps an OpenAI client to auto-scan inputs and outputs.
+    """Wraps an OpenAI client to auto-scan inputs, outputs, and tool results.
+
+    v0.8.0 adds ``role="tool"`` and ``role="function"`` message scanning:
+    when the ``messages`` list contains messages with ``role="tool"`` or
+    ``role="function"`` (OpenAI's tool/function result message format),
+    each message's text is scanned through ``ToolResultGuard`` before the
+    request is forwarded. Messages are classified into ``ToolResultAttackFamily``
+    values available via ``report.scan_context.attack_families``.
 
     Usage::
 
@@ -30,6 +57,8 @@ class PromptShieldOpenAI:
         engine: PromptShieldEngine | None = None,
         mode: str = "block",
         scan_responses: bool = False,
+        scan_tool_results: bool = True,
+        tool_result_mode: str = "block",
     ) -> None:
         if client is None:
             try:
@@ -44,34 +73,96 @@ class PromptShieldOpenAI:
         self._engine = engine or PromptShieldEngine()
         self.mode = mode
         self.scan_responses = scan_responses
+        self.scan_tool_results = scan_tool_results
+        self.tool_result_mode = tool_result_mode
+        # mode="log" so this wrapper controls block/flag via tool_result_mode.
+        self._tool_guard = ToolResultGuard(engine=self._engine, mode="log")
 
     def create(self, **kwargs: Any) -> Any:
         """Scan messages, call ``chat.completions.create``, optionally scan response."""
         messages = kwargs.get("messages", [])
 
         for msg in messages:
+            role = msg.get("role", "unknown")
             content = msg.get("content")
-            if not content or not isinstance(content, str):
+
+            if role in ("tool", "function"):
+                if not self.scan_tool_results:
+                    continue
+                text = _extract_openai_message_text(content)
+                if not text:
+                    continue
+                tool_name = msg.get("name") or msg.get("tool_call_id")
+                if not isinstance(tool_name, str):
+                    tool_name = None
+                report = self._tool_guard.scan(
+                    text,
+                    tool_name=tool_name,
+                    tool_type="openai_tool",
+                )
+                if report.action == Action.BLOCK and self.tool_result_mode == "block":
+                    families = (
+                        [f.value for f in report.scan_context.attack_families]
+                        if report.scan_context
+                        else []
+                    )
+                    raise ValueError(
+                        f"prompt-shield BLOCKED tool_result message "
+                        f"(scan_id={report.scan_id}, tool_name={tool_name}, "
+                        f"families={families})"
+                    )
+                if report.detections:
+                    families = (
+                        [f.value for f in report.scan_context.attack_families]
+                        if report.scan_context
+                        else []
+                    )
+                    logger.warning(
+                        "Suspicious content in tool_result message (role=%s, tool_name=%s): "
+                        "%s (families=%s)",
+                        role,
+                        tool_name,
+                        report.scan_id,
+                        families,
+                    )
                 continue
-            report = self._engine.scan(
-                content,
-                context={
-                    "gate": "input",
-                    "source": "openai",
-                    "role": msg.get("role", "unknown"),
-                },
-            )
-            if report.action == Action.BLOCK and self.mode == "block":
-                raise ValueError(
-                    f"Prompt injection detected by prompt-shield: "
-                    f"{report.scan_id} (risk={report.overall_risk_score:.2f})"
+
+            if not content:
+                continue
+            if isinstance(content, str):
+                texts = [content]
+            elif isinstance(content, list):
+                texts = [
+                    part.get("text", "")
+                    if isinstance(part, dict) and part.get("type") == "text"
+                    else (part if isinstance(part, str) else "")
+                    for part in content
+                ]
+            else:
+                continue
+
+            for text in texts:
+                if not text:
+                    continue
+                report = self._engine.scan(
+                    text,
+                    context={
+                        "gate": "input",
+                        "source": "openai",
+                        "role": role,
+                    },
                 )
-            if report.detections:
-                logger.warning(
-                    "Suspicious content in %s message: %s",
-                    msg.get("role", "unknown"),
-                    report.scan_id,
-                )
+                if report.action == Action.BLOCK and self.mode == "block":
+                    raise ValueError(
+                        f"Prompt injection detected by prompt-shield: "
+                        f"{report.scan_id} (risk={report.overall_risk_score:.2f})"
+                    )
+                if report.detections:
+                    logger.warning(
+                        "Suspicious content in %s message: %s",
+                        role,
+                        report.scan_id,
+                    )
 
         response = self._client.chat.completions.create(**kwargs)
 
