@@ -38,8 +38,8 @@ class PromptShieldOpenAI:
     when the ``messages`` list contains messages with ``role="tool"`` or
     ``role="function"`` (OpenAI's tool/function result message format),
     each message's text is scanned through ``ToolResultGuard`` before the
-    request is forwarded. Messages are classified into ``ToolResultAttackFamily``
-    values available via ``report.scan_context.attack_families``.
+    request is forwarded. ``tool_result_mode`` controls tool result scanning
+    ('block', 'flag', 'log', 'monitor'); 'sanitize' is not supported by this wrapper.
 
     Usage::
 
@@ -58,7 +58,7 @@ class PromptShieldOpenAI:
         mode: str = "block",
         scan_responses: bool = False,
         scan_tool_results: bool = True,
-        tool_result_mode: str = "block",
+        tool_result_mode: str | None = None,
     ) -> None:
         if client is None:
             try:
@@ -74,7 +74,16 @@ class PromptShieldOpenAI:
         self.mode = mode
         self.scan_responses = scan_responses
         self.scan_tool_results = scan_tool_results
-        self.tool_result_mode = tool_result_mode
+
+        effective_tool_mode = mode if tool_result_mode is None else tool_result_mode
+        if effective_tool_mode == "sanitize":
+            raise ValueError("tool_result_mode='sanitize' is not supported by PromptShieldOpenAI")
+        valid_modes = ("block", "flag", "log", "monitor")
+        if effective_tool_mode not in valid_modes:
+            raise ValueError(
+                f"tool_result_mode must be one of {valid_modes}, got {effective_tool_mode!r}"
+            )
+        self.tool_result_mode = effective_tool_mode
         # mode="log" so this wrapper controls block/flag via tool_result_mode.
         self._tool_guard = ToolResultGuard(engine=self._engine, mode="log")
 
@@ -129,40 +138,29 @@ class PromptShieldOpenAI:
 
             if not content:
                 continue
-            if isinstance(content, str):
-                texts = [content]
-            elif isinstance(content, list):
-                texts = [
-                    part.get("text", "")
-                    if isinstance(part, dict) and part.get("type") == "text"
-                    else (part if isinstance(part, str) else "")
-                    for part in content
-                ]
-            else:
+            text = _extract_openai_message_text(content)
+            if not text:
                 continue
 
-            for text in texts:
-                if not text:
-                    continue
-                report = self._engine.scan(
-                    text,
-                    context={
-                        "gate": "input",
-                        "source": "openai",
-                        "role": role,
-                    },
+            report = self._engine.scan(
+                text,
+                context={
+                    "gate": "input",
+                    "source": "openai",
+                    "role": role,
+                },
+            )
+            if report.action == Action.BLOCK and self.mode == "block":
+                raise ValueError(
+                    f"Prompt injection detected by prompt-shield: "
+                    f"{report.scan_id} (risk={report.overall_risk_score:.2f})"
                 )
-                if report.action == Action.BLOCK and self.mode == "block":
-                    raise ValueError(
-                        f"Prompt injection detected by prompt-shield: "
-                        f"{report.scan_id} (risk={report.overall_risk_score:.2f})"
-                    )
-                if report.detections:
-                    logger.warning(
-                        "Suspicious content in %s message: %s",
-                        role,
-                        report.scan_id,
-                    )
+            if report.detections:
+                logger.warning(
+                    "Suspicious content in %s message: %s",
+                    role,
+                    report.scan_id,
+                )
 
         response = self._client.chat.completions.create(**kwargs)
 
